@@ -438,9 +438,12 @@ export class GeminiWebProvider extends BaseWebProvider {
 
     // Código JavaScript PURO para executar no navegador.
     // NADA de TypeScript, NADA de funções nomeadas decoradas por tsx.
+    // O Gemini renderiza as respostas em elementos `message-content` com id
+    // dinâmico (message-content-id-*) e o conteúdo markdown em
+    // `.markdown.markdown-main-panel p`.
     const extractScript = `
       (function() {
-        // Função para limpar texto
+        // Função de limpeza
         function cleanText(text) {
           if (!text) return '';
           var uiPatterns = [
@@ -449,7 +452,8 @@ export class GeminiWebProvider extends BaseWebProvider {
             'Regenerate', 'Copy', 'Like', 'Dislike', 'Share',
             'Report', 'Edit', 'Delete', 'Pesquisar conversas',
             'Imagens', 'Vídeos', 'Biblioteca', 'Notebooks',
-            'Recentes', 'Pro', 'Nova conversa', 'User:'
+            'Recentes', 'Pro', 'Nova conversa', 'User:', 'Spark',
+            'Beta', 'Conversa', 'Untitled notebook', 'Flash'
           ];
           var cleaned = text;
           for (var i = 0; i < uiPatterns.length; i++) {
@@ -461,7 +465,8 @@ export class GeminiWebProvider extends BaseWebProvider {
         function isUiText(text) {
           var uiKeywords = [
             'Dictate', 'Sign in', 'Settings', 'Switch model',
-            'Submit', 'Fullscreen', 'New chat', 'User:'
+            'Submit', 'Fullscreen', 'New chat', 'User:', 'Spark',
+            'Beta', 'Conversa', 'Untitled notebook', 'Flash'
           ];
           for (var i = 0; i < uiKeywords.length; i++) {
             if (text.indexOf(uiKeywords[i]) !== -1) return true;
@@ -469,68 +474,81 @@ export class GeminiWebProvider extends BaseWebProvider {
           return false;
         }
 
-        // MÉTODO 1: Buscar mensagens do assistente por data-message-type
-        var assistantMessages = document.querySelectorAll('[data-message-type="assistant"]');
-        if (assistantMessages.length > 0) {
-          var lastMessage = assistantMessages[assistantMessages.length - 1];
-          var text = cleanText(lastMessage.textContent || '');
-          if (text.length > 10 && !isUiText(text)) {
-            return text;
-          }
-        }
-
-        // MÉTODO 2: Buscar dentro do container da resposta do assistente
-        var responseContainers = document.querySelectorAll(
-          '.model-response-text, .assistant-message, [data-testid="assistant-message"]'
-        );
-        for (var i = responseContainers.length - 1; i >= 0; i--) {
-          var text = cleanText(responseContainers[i].textContent || '');
-          if (text.length > 10 && !isUiText(text) && text.indexOf('User:') === -1) {
-            return text;
-          }
-        }
-
-        // MÉTODO 3: Buscar todos os parágrafos dentro do markdown
-        // e filtrar para pegar apenas o que NÃO é do usuário
-        var markdown = document.querySelector('.markdown.markdown-main-panel');
-        if (markdown) {
-          var paragraphs = markdown.querySelectorAll('p');
-          // Procurar do último para o primeiro
-          for (var i = paragraphs.length - 1; i >= 0; i--) {
-            var text = cleanText(paragraphs[i].textContent || '');
-            // Verificar se NÃO é UI e NÃO contém "User:"
-            if (text.length > 10 && !isUiText(text) && text.indexOf('User:') === -1) {
-              return text;
+        // MÉTODO 1: message-content (MAIS CONFIÁVEL) - a resposta do Gemini
+        var messageContent = document.querySelector('message-content');
+        if (messageContent) {
+          var markdown = messageContent.querySelector('.markdown.markdown-main-panel');
+          if (markdown) {
+            var paragraphs = markdown.querySelectorAll('p');
+            var texts = [];
+            for (var i = 0; i < paragraphs.length; i++) {
+              var text = cleanText(paragraphs[i].textContent || '');
+              if (text.length > 5 && !isUiText(text) && text.indexOf('User:') === -1) {
+                texts.push(text);
+              }
+            }
+            if (texts.length > 0) {
+              return texts.join(' ');
             }
           }
         }
 
-        // MÉTODO 4: FALLBACK - Qualquer elemento com texto substancial
-        // que NÃO seja UI e NÃO seja "User:"
-        var allElements = document.querySelectorAll('div, p, span, pre, code');
+        // MÉTODO 2: Por id da mensagem (padrão: message-content-id-*)
+        var messageElements = document.querySelectorAll('[id^="message-content-id-"]');
+        if (messageElements.length > 0) {
+          var idLast = messageElements[messageElements.length - 1];
+          var idMarkdown = idLast.querySelector('.markdown.markdown-main-panel');
+          if (idMarkdown) {
+            var idParagraphs = idMarkdown.querySelectorAll('p');
+            var idTexts = [];
+            for (var i = 0; i < idParagraphs.length; i++) {
+              var text = cleanText(idParagraphs[i].textContent || '');
+              if (text.length > 5 && !isUiText(text) && text.indexOf('User:') === -1) {
+                idTexts.push(text);
+              }
+            }
+            if (idTexts.length > 0) {
+              return idTexts.join(' ');
+            }
+          }
+        }
+
+        // MÉTODO 3: p[data-path-to-node]
+        var pathParagraphs = document.querySelectorAll('p[data-path-to-node]');
+        if (pathParagraphs.length > 0) {
+          var pathTexts = [];
+          for (var i = pathParagraphs.length - 1; i >= 0; i--) {
+            var text = cleanText(pathParagraphs[i].textContent || '');
+            if (text.length > 10 && !isUiText(text) && text.indexOf('User:') === -1) {
+              pathTexts.push(text);
+            }
+          }
+          if (pathTexts.length > 0) {
+            return pathTexts.join(' ');
+          }
+        }
+
+        // MÉTODO 4: FALLBACK - qualquer texto substancial que não seja UI
+        var allElements = document.querySelectorAll('div, p, span');
         var candidates = [];
         for (var i = 0; i < allElements.length; i++) {
           var text = cleanText(allElements[i].textContent || '');
-          if (text.length > 20 && !isUiText(text) && text.indexOf('User:') === -1) {
-            // Verificar se não é um elemento de UI
+          if (text.length > 30 && !isUiText(text) && text.indexOf('User:') === -1) {
             var className = typeof allElements[i].className === 'string' ? allElements[i].className : '';
             var role = allElements[i].getAttribute('role') || '';
             if (className.indexOf('button') === -1 &&
                 className.indexOf('menu') === -1 &&
                 className.indexOf('header') === -1 &&
+                className.indexOf('toolbar') === -1 &&
                 role !== 'button' &&
                 role !== 'menu') {
-              candidates.push({
-                text: text,
-                length: text.length
-              });
+              candidates.push({ text: text, length: text.length });
             }
           }
         }
 
         if (candidates.length > 0) {
           candidates.sort(function(a, b) { return b.length - a.length; });
-          // Pegar o maior que não é UI
           for (var i = 0; i < candidates.length; i++) {
             if (!isUiText(candidates[i].text) && candidates[i].text.indexOf('User:') === -1) {
               return candidates[i].text;
