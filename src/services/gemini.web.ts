@@ -343,123 +343,133 @@ export class GeminiWebProvider extends BaseWebProvider {
    * Tries a list of targeted selectors first, then falls back to scanning for
    * the most substantial text block that does not look like interface chrome.
    *
-   * NOTE: the code inside page.evaluate() must be plain browser JavaScript
-   * with no Node.js helpers (tsx injects `__name` into named functions, which
-   * does not exist in the browser context and throws ReferenceError).
+   * IMPORTANT: the extraction code is passed to page.evaluate() as a STRING of
+   * plain browser JavaScript. Passing a compiled function lets tsx/esbuild
+   * inject the `__name` helper, which does not exist in the browser context and
+   * throws "ReferenceError: __name is not defined". A string is executed
+   * verbatim and avoids that transform entirely.
    */
   private async extractAssistantResponse(): Promise<string> {
     if (!this.page) return '';
 
     console.log('[Gemini] Extraindo resposta...');
 
-    const response = await this.page?.evaluate(() => {
-      // Função SIMPLES de limpeza de texto (sem dependências externas)
-      const cleanText = (text: string): string => {
-        if (!text) return '';
+    // Código JavaScript PURO para executar no navegador.
+    // NADA de TypeScript, NADA de funções nomeadas decoradas por tsx.
+    const extractScript = `
+      (function() {
+        // Função de limpeza de texto
+        function cleanText(text) {
+          if (!text) return '';
 
-        // Lista de padrões de UI para remover
-        const uiPatterns = [
-          'Dictate',
-          'Sign in',
-          'Settings',
-          'Switch model',
-          'Submit',
-          'Fullscreen',
-          'New chat',
-          'Send',
-          'Stop',
-          'Regenerate',
-          'Copy',
-          'Like',
-          'Dislike',
-          'Share',
-          'Report',
-          'Edit',
-          'Delete',
-          '^⇧D',
-          '^⇧M'
+          var uiPatterns = [
+            'Dictate', 'Sign in', 'Settings', 'Switch model',
+            'Submit', 'Fullscreen', 'New chat', 'Send', 'Stop',
+            'Regenerate', 'Copy', 'Like', 'Dislike', 'Share',
+            'Report', 'Edit', 'Delete', '^⇧D', '^⇧M'
+          ];
+
+          var cleaned = text;
+          for (var i = 0; i < uiPatterns.length; i++) {
+            cleaned = cleaned.replace(new RegExp(uiPatterns[i], 'gi'), '');
+          }
+
+          return cleaned.replace(/\\s+/g, ' ').trim();
+        }
+
+        // Verificar se texto parece UI
+        function isUiChrome(text) {
+          var uiKeywords = ['Dictate', 'Sign in', 'Settings', 'Switch model', 'Submit', 'Fullscreen'];
+          for (var i = 0; i < uiKeywords.length; i++) {
+            if (text.indexOf(uiKeywords[i]) !== -1) return true;
+          }
+          return false;
+        }
+
+        // SELETORES PARA MENSAGENS DO ASSISTENTE
+        var assistantSelectors = [
+          '[data-message-type="assistant"]',
+          '[data-testid="assistant-message"]',
+          '.message-content.assistant',
+          '.model-response-text:last-child',
+          '.conversation-item:last-child [data-message-type="assistant"]',
+          'div[role="article"]:last-child .text-content',
+          '.text-body-large:last-child'
         ];
 
-        let cleaned = text;
-        for (const pattern of uiPatterns) {
-          cleaned = cleaned.replace(new RegExp(pattern, 'gi'), '');
-        }
-
-        // Remover espaços extras e linhas vazias
-        return cleaned.replace(/\s+/g, ' ').trim();
-      };
-
-      // Verificar se texto parece UI
-      const isUiChrome = (text: string): boolean => {
-        const uiKeywords = ['Dictate', 'Sign in', 'Settings', 'Switch model', 'Submit', 'Fullscreen'];
-        for (const keyword of uiKeywords) {
-          if (text.includes(keyword)) return true;
-        }
-        return false;
-      };
-
-      // SELETORES PARA MENSAGENS DO ASSISTENTE
-      const assistantSelectors = [
-        '[data-message-type="assistant"]',
-        '[data-testid="assistant-message"]',
-        '.message-content.assistant',
-        '.model-response-text:last-child',
-        '.conversation-item:last-child [data-message-type="assistant"]',
-        'div[role="article"]:last-child .text-content',
-        '.text-body-large:last-child'
-      ];
-
-      // Tentar cada seletor
-      for (const selector of assistantSelectors) {
-        const elements = document.querySelectorAll(selector);
-        if (elements.length > 0) {
-          const lastEl = elements[elements.length - 1];
-          const text = cleanText(lastEl.textContent || '');
-          if (text.length > 10 && !isUiChrome(text)) {
-            return text;
+        // Tentar cada seletor
+        for (var s = 0; s < assistantSelectors.length; s++) {
+          var elements = document.querySelectorAll(assistantSelectors[s]);
+          if (elements.length > 0) {
+            var lastEl = elements[elements.length - 1];
+            var text = cleanText(lastEl.textContent || '');
+            if (text.length > 10 && !isUiChrome(text)) {
+              return text;
+            }
           }
         }
-      }
 
-      // FALLBACK: Procurar qualquer texto substancial
-      const allElements = document.querySelectorAll('div, p, span, pre, code, article');
-      let bestText = '';
-      let bestLength = 0;
+        // FALLBACK: Procurar qualquer texto substancial
+        var allElements = document.querySelectorAll('div, p, span, pre, code, article');
+        var bestText = '';
+        var bestLength = 0;
 
-      for (const el of allElements) {
-        const text = cleanText(el.textContent || '');
-        if (text.length > bestLength && text.length > 20 && !isUiChrome(text)) {
-          bestText = text;
-          bestLength = text.length;
+        for (var e = 0; e < allElements.length; e++) {
+          var text = cleanText(allElements[e].textContent || '');
+          if (text.length > bestLength && text.length > 20 && !isUiChrome(text)) {
+            bestText = text;
+            bestLength = text.length;
+          }
         }
+
+        return bestText;
+      })();
+    `;
+
+    try {
+      const response = await this.page.evaluate(extractScript) as string;
+
+      if (!response || response.length < 10) {
+        console.warn('[Gemini] Resposta curta ou vazia, tentando debug...');
+        await this.debugPageStructure();
+        return '';
       }
 
-      return bestText;
-    });
-
-    return response || '';
+      console.log(`[Gemini] Resposta recebida (${response.length} caracteres)`);
+      return response;
+    } catch (error) {
+      console.error('[Gemini] Erro ao extrair resposta:', error);
+      await this.debugPageStructure();
+      throw error;
+    }
   }
 
   /** Logs a sample of page text to help tune selectors when the UI changes. */
   private async debugPageStructure(): Promise<void> {
     try {
       console.log('[Gemini] Debugando estrutura da página...');
-      const structure = await this.page?.evaluate(() => {
-        const elements = document.querySelectorAll('div, p, span, pre, code, article');
-        const result: Array<{ tag: string; class: string; id: string; text: string }> = [];
-        for (const el of elements) {
-          const text = el.textContent?.trim() || '';
-          if (text.length > 20 && text.length < 500) {
-            result.push({
-              tag: el.tagName,
-              class: typeof el.className === 'string' ? el.className : '',
-              id: el.id,
-              text: text.slice(0, 100),
-            });
+      // String literal de JS puro, como em extractAssistantResponse, para
+      // evitar a injeção do helper `__name` pelo tsx/esbuild.
+      const debugScript = `
+        (function() {
+          var elements = document.querySelectorAll('div, p, span, pre, code, article');
+          var result = [];
+          for (var i = 0; i < elements.length; i++) {
+            var el = elements[i];
+            var text = (el.textContent || '').trim();
+            if (text.length > 20 && text.length < 500) {
+              result.push({
+                tag: el.tagName,
+                className: typeof el.className === 'string' ? el.className : '',
+                id: el.id,
+                text: text.slice(0, 100)
+              });
+            }
           }
-        }
-        return result.slice(0, 10);
-      });
+          return result.slice(0, 10);
+        })();
+      `;
+      const structure = await this.page?.evaluate(debugScript);
       console.log('📄 Estrutura da página:', JSON.stringify(structure, null, 2));
     } catch (error) {
       console.error('Erro ao debuggar estrutura:', error);
