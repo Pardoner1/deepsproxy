@@ -440,34 +440,36 @@ export class GeminiWebProvider extends BaseWebProvider {
     // NADA de TypeScript, NADA de funções nomeadas decoradas por tsx.
     const extractScript = `
       (function() {
-        // Função de limpeza
+        // Função de limpeza (regex específicas de UI)
         function cleanText(text) {
           if (!text) return '';
-          // Remover textos da UI
-          var uiPatterns = [
-            'Dictate', 'Sign in', 'Settings', 'Switch model',
-            'Submit', 'Fullscreen', 'New chat', 'Send', 'Stop',
-            'Regenerate', 'Copy', 'Like', 'Dislike', 'Share',
-            'Report', 'Edit', 'Delete', 'Conversa', 'Spark',
-            'Beta', 'Pesquisar conversas', 'Imagens', 'Vídeos',
-            'Biblioteca', 'Notebooks', 'Recentes', 'Pro',
-            'Nova conversa', 'Novo notebook', 'Untitled notebook'
-          ];
-          var cleaned = text;
-          for (var i = 0; i < uiPatterns.length; i++) {
-            cleaned = cleaned.replace(new RegExp(uiPatterns[i], 'gi'), '');
-          }
-          return cleaned.replace(/\\s+/g, ' ').trim();
+          return text
+            .replace(/Dictate.*/g, '')
+            .replace(/Sign in.*/g, '')
+            .replace(/Settings.*/g, '')
+            .replace(/Switch model.*/g, '')
+            .replace(/Submit.*/g, '')
+            .replace(/Fullscreen.*/g, '')
+            .replace(/New chat.*/g, '')
+            .replace(/Pesquisar conversas.*/g, '')
+            .replace(/Imagens.*/g, '')
+            .replace(/Vídeos.*/g, '')
+            .replace(/Biblioteca.*/g, '')
+            .replace(/Notebooks.*/g, '')
+            .replace(/Recentes.*/g, '')
+            .replace(/Pro.*/g, '')
+            .replace(/\\s+/g, ' ')
+            .trim();
         }
 
-        // Verificar se o texto é da UI
+        // Verificar se o texto é da UI (keywords residuais)
         function isUiText(text) {
           var uiKeywords = [
             'Dictate', 'Sign in', 'Settings', 'Switch model',
-            'Submit', 'Fullscreen', 'New chat', 'Conversa',
-            'Spark', 'Beta', 'Pesquisar conversas', 'Imagens',
-            'Vídeos', 'Biblioteca', 'Notebooks', 'Recentes',
-            'Pro', 'Nova conversa', 'Novo notebook'
+            'Submit', 'Fullscreen', 'New chat', 'Pesquisar conversas',
+            'Imagens', 'Vídeos', 'Biblioteca', 'Notebooks',
+            'Recentes', 'Pro', 'Nova conversa', 'Novo notebook',
+            'Untitled notebook', 'Spark', 'Beta'
           ];
           for (var i = 0; i < uiKeywords.length; i++) {
             if (text.indexOf(uiKeywords[i]) !== -1) return true;
@@ -475,78 +477,50 @@ export class GeminiWebProvider extends BaseWebProvider {
           return false;
         }
 
-        // MÉTODO 1: Procurar mensagens do assistente com data-message-type
-        var assistantMessages = document.querySelectorAll('[data-message-type="assistant"]');
-        if (assistantMessages.length > 0) {
-          // Pegar a ÚLTIMA mensagem do assistente
-          var lastMessage = assistantMessages[assistantMessages.length - 1];
-          var text = cleanText(lastMessage.textContent || '');
+        // SELETOR PRINCIPAL - baseado no HTML real
+        var mainSelectors = [
+          '.markdown.markdown-main-panel p',
+          '.markdown-main-panel p',
+          '.message-content .markdown p',
+          '[data-message-type="assistant"] .markdown p',
+          '.model-response-text p'
+        ];
+
+        // Tentar cada seletor
+        for (var s = 0; s < mainSelectors.length; s++) {
+          var elements = document.querySelectorAll(mainSelectors[s]);
+          if (elements.length > 0) {
+            var parts = [];
+            // Concatenar todos os paragrafos da ultima mensagem
+            for (var i = 0; i < elements.length; i++) {
+              var text = cleanText(elements[i].textContent || '');
+              if (text.length > 0) parts.push(text);
+            }
+            if (parts.length === 0) continue;
+            var joined = parts.join('\\n');
+            if (joined.length > 10 && !isUiText(joined)) {
+              return joined;
+            }
+          }
+        }
+
+        // FALLBACK 1: conteudo do primeiro .markdown encontrado
+        var markdown = document.querySelector('.markdown');
+        if (markdown) {
+          var text = cleanText(markdown.textContent || '');
           if (text.length > 10 && !isUiText(text)) {
             return text;
           }
         }
 
-        // MÉTODO 2: Procurar por mensagens com classe específica
-        var messageSelectors = [
-          '.message-content.assistant',
-          '.model-response-text',
-          '[data-testid="assistant-message"]',
-          '.conversation-item:last-child [data-message-type="assistant"]'
-        ];
-
-        for (var s = 0; s < messageSelectors.length; s++) {
-          var elements = document.querySelectorAll(messageSelectors[s]);
-          if (elements.length > 0) {
-            var lastEl = elements[elements.length - 1];
-            var text = cleanText(lastEl.textContent || '');
-            if (text.length > 10 && !isUiText(text)) {
-              return text;
-            }
-          }
+        // FALLBACK 2: qualquer paragrafo substancial que nao seja UI
+        var allP = document.querySelectorAll('p');
+        var best = '';
+        for (var i = 0; i < allP.length; i++) {
+          var t = cleanText(allP[i].textContent || '');
+          if (t.length > best.length && !isUiText(t)) best = t;
         }
-
-        // MÉTODO 3: Procurar por qualquer elemento com texto substancial
-        // que NÃO seja da UI
-        var allElements = document.querySelectorAll('div, p, span, pre, code');
-        var candidates = [];
-
-        for (var i = 0; i < allElements.length; i++) {
-          var el = allElements[i];
-          var text = cleanText(el.textContent || '');
-          // Verificar se o elemento é uma mensagem (não UI)
-          if (text.length > 20 && !isUiText(text)) {
-            // Verificar se o elemento não é um botón, menu o header
-            var className = typeof el.className === 'string' ? el.className : '';
-            var role = el.getAttribute('role') || '';
-            if (className.indexOf('button') === -1 &&
-                className.indexOf('menu') === -1 &&
-                className.indexOf('header') === -1 &&
-                className.indexOf('toolbar') === -1 &&
-                role !== 'button' &&
-                role !== 'menu') {
-              candidates.push({
-                text: text,
-                length: text.length,
-                depth: el.parentElement ? el.parentElement.children.length : 0
-              });
-            }
-          }
-        }
-
-        // Pegar o candidato com maior texto (que não é UI)
-        if (candidates.length > 0) {
-          candidates.sort(function(a, b) { return b.length - a.length; });
-          // Verificar se o maior não é UI
-          if (!isUiText(candidates[0].text)) {
-            return candidates[0].text;
-          }
-          // Tentar o segundo
-          if (candidates.length > 1 && !isUiText(candidates[1].text)) {
-            return candidates[1].text;
-          }
-        }
-
-        return '';
+        return best;
       })();
     `;
 
@@ -560,7 +534,7 @@ export class GeminiWebProvider extends BaseWebProvider {
       }
 
       console.log(`[Gemini] Resposta recebida (${response.length} caracteres)`);
-      console.log(`[Gemini] Preview: ${response.slice(0, 200)}...`);
+      console.log(`[Gemini] Preview: ${response.slice(0, 100)}...`);
       return response;
     } catch (error) {
       console.error('[Gemini] Erro ao extrair resposta:', error);
