@@ -440,36 +440,28 @@ export class GeminiWebProvider extends BaseWebProvider {
     // NADA de TypeScript, NADA de funções nomeadas decoradas por tsx.
     const extractScript = `
       (function() {
-        // Função de limpeza (regex específicas de UI)
+        // Função para limpar texto
         function cleanText(text) {
           if (!text) return '';
-          return text
-            .replace(/Dictate.*/g, '')
-            .replace(/Sign in.*/g, '')
-            .replace(/Settings.*/g, '')
-            .replace(/Switch model.*/g, '')
-            .replace(/Submit.*/g, '')
-            .replace(/Fullscreen.*/g, '')
-            .replace(/New chat.*/g, '')
-            .replace(/Pesquisar conversas.*/g, '')
-            .replace(/Imagens.*/g, '')
-            .replace(/Vídeos.*/g, '')
-            .replace(/Biblioteca.*/g, '')
-            .replace(/Notebooks.*/g, '')
-            .replace(/Recentes.*/g, '')
-            .replace(/Pro.*/g, '')
-            .replace(/\\s+/g, ' ')
-            .trim();
+          var uiPatterns = [
+            'Dictate', 'Sign in', 'Settings', 'Switch model',
+            'Submit', 'Fullscreen', 'New chat', 'Send', 'Stop',
+            'Regenerate', 'Copy', 'Like', 'Dislike', 'Share',
+            'Report', 'Edit', 'Delete', 'Pesquisar conversas',
+            'Imagens', 'Vídeos', 'Biblioteca', 'Notebooks',
+            'Recentes', 'Pro', 'Nova conversa', 'User:'
+          ];
+          var cleaned = text;
+          for (var i = 0; i < uiPatterns.length; i++) {
+            cleaned = cleaned.replace(new RegExp(uiPatterns[i], 'gi'), '');
+          }
+          return cleaned.replace(/\\s+/g, ' ').trim();
         }
 
-        // Verificar se o texto é da UI (keywords residuais)
         function isUiText(text) {
           var uiKeywords = [
             'Dictate', 'Sign in', 'Settings', 'Switch model',
-            'Submit', 'Fullscreen', 'New chat', 'Pesquisar conversas',
-            'Imagens', 'Vídeos', 'Biblioteca', 'Notebooks',
-            'Recentes', 'Pro', 'Nova conversa', 'Novo notebook',
-            'Untitled notebook', 'Spark', 'Beta'
+            'Submit', 'Fullscreen', 'New chat', 'User:'
           ];
           for (var i = 0; i < uiKeywords.length; i++) {
             if (text.indexOf(uiKeywords[i]) !== -1) return true;
@@ -477,50 +469,76 @@ export class GeminiWebProvider extends BaseWebProvider {
           return false;
         }
 
-        // SELETOR PRINCIPAL - baseado no HTML real
-        var mainSelectors = [
-          '.markdown.markdown-main-panel p',
-          '.markdown-main-panel p',
-          '.message-content .markdown p',
-          '[data-message-type="assistant"] .markdown p',
-          '.model-response-text p'
-        ];
-
-        // Tentar cada seletor
-        for (var s = 0; s < mainSelectors.length; s++) {
-          var elements = document.querySelectorAll(mainSelectors[s]);
-          if (elements.length > 0) {
-            var parts = [];
-            // Concatenar todos os paragrafos da ultima mensagem
-            for (var i = 0; i < elements.length; i++) {
-              var text = cleanText(elements[i].textContent || '');
-              if (text.length > 0) parts.push(text);
-            }
-            if (parts.length === 0) continue;
-            var joined = parts.join('\\n');
-            if (joined.length > 10 && !isUiText(joined)) {
-              return joined;
-            }
-          }
-        }
-
-        // FALLBACK 1: conteudo do primeiro .markdown encontrado
-        var markdown = document.querySelector('.markdown');
-        if (markdown) {
-          var text = cleanText(markdown.textContent || '');
+        // MÉTODO 1: Buscar mensagens do assistente por data-message-type
+        var assistantMessages = document.querySelectorAll('[data-message-type="assistant"]');
+        if (assistantMessages.length > 0) {
+          var lastMessage = assistantMessages[assistantMessages.length - 1];
+          var text = cleanText(lastMessage.textContent || '');
           if (text.length > 10 && !isUiText(text)) {
             return text;
           }
         }
 
-        // FALLBACK 2: qualquer paragrafo substancial que nao seja UI
-        var allP = document.querySelectorAll('p');
-        var best = '';
-        for (var i = 0; i < allP.length; i++) {
-          var t = cleanText(allP[i].textContent || '');
-          if (t.length > best.length && !isUiText(t)) best = t;
+        // MÉTODO 2: Buscar dentro do container da resposta do assistente
+        var responseContainers = document.querySelectorAll(
+          '.model-response-text, .assistant-message, [data-testid="assistant-message"]'
+        );
+        for (var i = responseContainers.length - 1; i >= 0; i--) {
+          var text = cleanText(responseContainers[i].textContent || '');
+          if (text.length > 10 && !isUiText(text) && text.indexOf('User:') === -1) {
+            return text;
+          }
         }
-        return best;
+
+        // MÉTODO 3: Buscar todos os parágrafos dentro do markdown
+        // e filtrar para pegar apenas o que NÃO é do usuário
+        var markdown = document.querySelector('.markdown.markdown-main-panel');
+        if (markdown) {
+          var paragraphs = markdown.querySelectorAll('p');
+          // Procurar do último para o primeiro
+          for (var i = paragraphs.length - 1; i >= 0; i--) {
+            var text = cleanText(paragraphs[i].textContent || '');
+            // Verificar se NÃO é UI e NÃO contém "User:"
+            if (text.length > 10 && !isUiText(text) && text.indexOf('User:') === -1) {
+              return text;
+            }
+          }
+        }
+
+        // MÉTODO 4: FALLBACK - Qualquer elemento com texto substancial
+        // que NÃO seja UI e NÃO seja "User:"
+        var allElements = document.querySelectorAll('div, p, span, pre, code');
+        var candidates = [];
+        for (var i = 0; i < allElements.length; i++) {
+          var text = cleanText(allElements[i].textContent || '');
+          if (text.length > 20 && !isUiText(text) && text.indexOf('User:') === -1) {
+            // Verificar se não é um elemento de UI
+            var className = typeof allElements[i].className === 'string' ? allElements[i].className : '';
+            var role = allElements[i].getAttribute('role') || '';
+            if (className.indexOf('button') === -1 &&
+                className.indexOf('menu') === -1 &&
+                className.indexOf('header') === -1 &&
+                role !== 'button' &&
+                role !== 'menu') {
+              candidates.push({
+                text: text,
+                length: text.length
+              });
+            }
+          }
+        }
+
+        if (candidates.length > 0) {
+          candidates.sort(function(a, b) { return b.length - a.length; });
+          // Pegar o maior que não é UI
+          for (var i = 0; i < candidates.length; i++) {
+            if (!isUiText(candidates[i].text) && candidates[i].text.indexOf('User:') === -1) {
+              return candidates[i].text;
+            }
+          }
+        }
+
+        return '';
       })();
     `;
 
