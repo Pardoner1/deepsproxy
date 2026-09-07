@@ -129,11 +129,16 @@ O proxy suporta dois providers de web scraping, alternados pela variável `PROVI
 ### Login Gemini
 
 ```bash
-# Usando credenciais do .env (GEMINI_EMAIL / GEMINI_PASSWORD)
 npm run login:gemini
-
-# Ou manualmente: o browser abre e você completa o login
 ```
+
+O comando abre o navegador (não-headless) e:
+
+1. **Se `GEMINI_EMAIL`/`GEMINI_PASSWORD` estiverem no `.env`**: tenta o login automático.
+2. **Caso contrário (ou se o automático falhar, ex.: 2FA)**: o navegador permanece aberto e o script aguarda você completar o login manualmente — pressione `ENTER` no terminal após terminar.
+3. A sessão é salva em `gemini_profile/` e o navegador pode ser fechado manualmente.
+
+> O navegador **não** fecha sozinho durante o login manual. Se o login não for detectado, o script pergunta se você quer salvar a sessão atual mesmo assim.
 
 ### Login DeepSeek
 

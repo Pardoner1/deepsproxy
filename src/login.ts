@@ -19,16 +19,22 @@ async function main() {
 
   console.log(`🔐 Login for provider: ${PROVIDER.toUpperCase()}`);
 
-  switch (PROVIDER) {
-    case 'gemini':
-      await loginGemini();
-      break;
-    case 'deepseek':
-      await loginDeepSeek();
-      break;
-    default:
-      console.error(`❌ Invalid provider: ${PROVIDER}. Use "gemini" or "deepseek".`);
-      process.exit(1);
+  try {
+    switch (PROVIDER) {
+      case 'gemini':
+        await loginGemini();
+        break;
+      case 'deepseek':
+        await loginDeepSeek();
+        break;
+      default:
+        console.error(`❌ Provider inválido: ${PROVIDER}`);
+        console.log('   Opções válidas: gemini, deepseek');
+        process.exit(1);
+    }
+  } catch (error) {
+    console.error('❌ Erro durante o login:', error);
+    process.exit(1);
   }
 }
 

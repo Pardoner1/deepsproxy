@@ -44,6 +44,7 @@ const ASSISTANT_SELECTORS = [
 
 export class GeminiWebProvider extends BaseWebProvider {
   private readonly GEMINI_URL = GEMINI_URL;
+  private manualLoginMode = false;
 
   constructor() {
     super();
@@ -225,6 +226,54 @@ export class GeminiWebProvider extends BaseWebProvider {
 
   getAvailableModels(): string[] {
     return ['gemini-pro', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-2.0-flash'];
+  }
+
+  /**
+   * Habilita o modo de login manual - mantém o navegador aberto e permite
+   * que o usuário faça login manualmente sem que o navegador seja fechado.
+   */
+  async enableManualLogin(): Promise<void> {
+    this.manualLoginMode = true;
+    console.log('[Gemini] Modo de login manual ativado. O navegador permanecerá aberto.');
+  }
+
+  /**
+   * Verifica o status do login sem tentar fazer login automaticamente.
+   * Retorna true quando o usuário está autenticado (campo de texto presente
+   * e nenhum botão de "Sign in" visível).
+   */
+  async checkLoginStatus(): Promise<boolean> {
+    if (!this.page) return false;
+
+    try {
+      await this.page.goto(this.GEMINI_URL, { waitUntil: 'domcontentloaded', timeout: 10000 });
+      await this.page.waitForTimeout(3000);
+
+      const hasTextarea = await this.page.$(
+        'textarea[placeholder*="Ask Gemini"], textarea[placeholder*="Pergunte"]'
+      );
+      const hasLoginButton = await this.page.$(
+        'button:has-text("Sign in"), button:has-text("Fazer login")'
+      );
+
+      return !!hasTextarea && !hasLoginButton;
+    } catch (error) {
+      console.log('[Gemini] Erro ao verificar login:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Sobrescreve o método close para não fechar o navegador em modo de login
+   * manual. Use close(true) para forçar o fechamento.
+   */
+  async close(force: boolean = false): Promise<void> {
+    if (force || !this.manualLoginMode) {
+      await super.close();
+    } else {
+      console.log('[Gemini] Navegador mantido aberto para login manual.');
+      console.log('[Gemini] Feche o navegador manualmente quando terminar.');
+    }
   }
 
   // ─── Internals ─────────────────────────────────────────────────────────────
