@@ -28,20 +28,6 @@ const STOP_BUTTON =
   'button[aria-label*="Stop"], button[data-testid="stop-button"], ' +
   'button[aria-label*="Parar"], button[aria-label*="Stop generating"]';
 
-// Selectors for assistant (model) response messages.
-const ASSISTANT_SELECTORS = [
-  '[data-message-type="assistant"]',
-  '[data-testid="assistant-message"]',
-  '.message-content.assistant',
-  '.model-response-text',
-  '.conversation-item [data-message-type="assistant"]',
-  'div[role="article"] .text-content',
-  '.text-body-large',
-  '.gemini-response',
-  '.assistant-response',
-  '.response-content',
-];
-
 export class GeminiWebProvider extends BaseWebProvider {
   private readonly GEMINI_URL = GEMINI_URL;
   private manualLoginMode = false;
@@ -356,44 +342,23 @@ export class GeminiWebProvider extends BaseWebProvider {
    * Extracts only the assistant's response text, filtering out UI chrome.
    * Tries a list of targeted selectors first, then falls back to scanning for
    * the most substantial text block that does not look like interface chrome.
+   *
+   * NOTE: the code inside page.evaluate() must be plain browser JavaScript
+   * with no Node.js helpers (tsx injects `__name` into named functions, which
+   * does not exist in the browser context and throws ReferenceError).
    */
   private async extractAssistantResponse(): Promise<string> {
     if (!this.page) return '';
 
-    return this.page.evaluate((selectors) => {
-      // Strip common UI text and keyboard-shortcut hints.
+    console.log('[Gemini] Extraindo resposta...');
+
+    const response = await this.page?.evaluate(() => {
+      // Função SIMPLES de limpeza de texto (sem dependências externas)
       const cleanText = (text: string): string => {
         if (!text) return '';
-        const uiPatterns = [
-          /Dictate.*/g,
-          /Sign in.*/g,
-          /Settings.*/g,
-          /Switch model.*/g,
-          /Submit.*/g,
-          /Fullscreen.*/g,
-          /New chat.*/g,
-          /Send.*/g,
-          /Stop.*/g,
-          /Regenerate.*/g,
-          /Copy.*/g,
-          /Like.*/g,
-          /Dislike.*/g,
-          /Share.*/g,
-          /Report.*/g,
-          /Edit.*/g,
-          /Delete.*/g,
-          /\^⇧[A-Z]/g,
-          /\^\w/g,
-        ];
-        let cleaned = text;
-        for (const pattern of uiPatterns) {
-          cleaned = cleaned.replace(pattern, '');
-        }
-        return cleaned.trim();
-      };
 
-      const isUiChrome = (text: string): boolean => {
-        const uiKeywords = [
+        // Lista de padrões de UI para remover
+        const uiPatterns = [
           'Dictate',
           'Sign in',
           'Settings',
@@ -401,41 +366,78 @@ export class GeminiWebProvider extends BaseWebProvider {
           'Submit',
           'Fullscreen',
           'New chat',
+          'Send',
+          'Stop',
           'Regenerate',
+          'Copy',
+          'Like',
+          'Dislike',
+          'Share',
+          'Report',
+          'Edit',
+          'Delete',
+          '^⇧D',
+          '^⇧M'
         ];
-        return uiKeywords.some((k) => text.includes(k));
+
+        let cleaned = text;
+        for (const pattern of uiPatterns) {
+          cleaned = cleaned.replace(new RegExp(pattern, 'gi'), '');
+        }
+
+        // Remover espaços extras e linhas vazias
+        return cleaned.replace(/\s+/g, ' ').trim();
       };
 
-      // 1) Targeted assistant-message selectors.
-      for (const selector of selectors) {
-        const elements = document.querySelectorAll(selector);
-        if (elements.length === 0) continue;
+      // Verificar se texto parece UI
+      const isUiChrome = (text: string): boolean => {
+        const uiKeywords = ['Dictate', 'Sign in', 'Settings', 'Switch model', 'Submit', 'Fullscreen'];
+        for (const keyword of uiKeywords) {
+          if (text.includes(keyword)) return true;
+        }
+        return false;
+      };
 
-        const lastEl = elements[elements.length - 1];
-        const text = cleanText(lastEl.textContent || '');
-        if (text.length > 10 && !isUiChrome(text)) {
-          return text;
+      // SELETORES PARA MENSAGENS DO ASSISTENTE
+      const assistantSelectors = [
+        '[data-message-type="assistant"]',
+        '[data-testid="assistant-message"]',
+        '.message-content.assistant',
+        '.model-response-text:last-child',
+        '.conversation-item:last-child [data-message-type="assistant"]',
+        'div[role="article"]:last-child .text-content',
+        '.text-body-large:last-child'
+      ];
+
+      // Tentar cada seletor
+      for (const selector of assistantSelectors) {
+        const elements = document.querySelectorAll(selector);
+        if (elements.length > 0) {
+          const lastEl = elements[elements.length - 1];
+          const text = cleanText(lastEl.textContent || '');
+          if (text.length > 10 && !isUiChrome(text)) {
+            return text;
+          }
         }
       }
 
-      // 2) Fallback: scan for the most substantial non-UI text block.
+      // FALLBACK: Procurar qualquer texto substancial
       const allElements = document.querySelectorAll('div, p, span, pre, code, article');
-      const candidates = Array.from(allElements)
-        .map((el) => cleanText(el.textContent || ''))
-        .filter(
-          (text) =>
-            text.length > 20 &&
-            !isUiChrome(text) &&
-            !/^[\^⇧]{1,2}[A-Z]/.test(text)
-        )
-        .sort((a, b) => b.length - a.length);
+      let bestText = '';
+      let bestLength = 0;
 
-      if (candidates.length > 0) {
-        return candidates[0];
+      for (const el of allElements) {
+        const text = cleanText(el.textContent || '');
+        if (text.length > bestLength && text.length > 20 && !isUiChrome(text)) {
+          bestText = text;
+          bestLength = text.length;
+        }
       }
 
-      return '';
-    }, ASSISTANT_SELECTORS);
+      return bestText;
+    });
+
+    return response || '';
   }
 
   /** Logs a sample of page text to help tune selectors when the UI changes. */
