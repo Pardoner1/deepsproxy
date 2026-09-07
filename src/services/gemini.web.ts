@@ -196,16 +196,98 @@ export class GeminiWebProvider extends BaseWebProvider {
   async isLoggedIn(): Promise<boolean> {
     try {
       if (!this.page) return false;
+
+      console.log('[Gemini] Verificando login...');
+
+      // Ir para a página do Gemini
       await this.page.goto(this.GEMINI_URL, { waitUntil: 'domcontentloaded' });
-      await this.page.waitForTimeout(2000);
+      await this.page.waitForTimeout(3000);
 
-      const hasTextarea = await this.page.$(PROMPT_TEXTAREA);
-      const hasLoginButton = await this.page.$(
-        'button:has-text("Sign in"), button:has-text("Fazer login")'
-      );
+      // MÉTODO 1: Verificar se há uma conversa ou histórico (MAIS CONFIÁVEL)
+      const hasConversation = await this.page.evaluate(`
+        (function() {
+          var conversationSelectors = [
+            '[data-message-type]',
+            '.conversation-item',
+            '.message-content',
+            '[role="article"]'
+          ];
+          for (var i = 0; i < conversationSelectors.length; i++) {
+            if (document.querySelectorAll(conversationSelectors[i]).length > 0) {
+              return true;
+            }
+          }
+          return false;
+        })();
+      `);
 
-      return !!hasTextarea && !hasLoginButton;
-    } catch {
+      if (hasConversation) {
+        console.log('[Gemini] Login detectado por conversa existente');
+        return true;
+      }
+
+      // MÉTODO 2: Verificar se há campo de input E NÃO há botão de login
+      const hasInput = await this.page.evaluate(`
+        (function() {
+          var inputs = document.querySelectorAll('textarea, input[type="text"], [contenteditable="true"]');
+          for (var i = 0; i < inputs.length; i++) {
+            var placeholder = inputs[i].getAttribute('placeholder') || '';
+            var p = placeholder.toLowerCase();
+            if (p.indexOf('ask') !== -1 || p.indexOf('pergunte') !== -1 || p.indexOf('perguntar') !== -1) {
+              return true;
+            }
+          }
+          return false;
+        })();
+      `);
+
+      if (hasInput) {
+        // Verificar se NÃO há botão "Sign in"
+        const hasSignIn = await this.page.evaluate(`
+          (function() {
+            var buttons = document.querySelectorAll('button, a');
+            for (var i = 0; i < buttons.length; i++) {
+              var text = (buttons[i].textContent || '').toLowerCase();
+              if (text.indexOf('sign in') !== -1 ||
+                  text.indexOf('fazer login') !== -1 ||
+                  text.indexOf('entrar') !== -1) {
+                return true;
+              }
+            }
+            return false;
+          })();
+        `);
+
+        if (!hasSignIn) {
+          console.log('[Gemini] Login detectado por input sem botão de login');
+          return true;
+        }
+      }
+
+      // MÉTODO 3: Verificar se há avatar do usuário
+      const hasAvatar = await this.page.evaluate(`
+        (function() {
+          var elements = document.querySelectorAll('[class*="avatar"], [class*="profile"], [class*="user"]');
+          for (var i = 0; i < elements.length; i++) {
+            var text = elements[i].textContent || '';
+            if (text.length > 0 && text.length < 50 && text.indexOf('Sign in') === -1) {
+              return true;
+            }
+          }
+          return false;
+        })();
+      `);
+
+      if (hasAvatar) {
+        console.log('[Gemini] Login detectado por avatar');
+        return true;
+      }
+
+      console.log('[Gemini] Nenhum método detectou login');
+      return false;
+
+    } catch (error) {
+      console.log('[Gemini] Erro ao verificar login:', error);
       return false;
     }
   }
