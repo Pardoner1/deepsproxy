@@ -404,17 +404,37 @@ export class GeminiWebProvider extends BaseWebProvider {
         console.log('[Gemini] Botão Stop não encontrado, continuando...');
       }
 
-      // 2. Aguardar um pouco para o DOM atualizar
-      await this.page.waitForTimeout(2000);
+// 2. Aguardar o texto completo ser renderizado
+      // Esperar até que o último parágrafo tenha texto substancial
+      await this.page.waitForFunction(
+        () => {
+          const container = document.querySelector(
+            'message-content[id^="message-content-id-"] .markdown.markdown-main-panel'
+          );
+          if (!container) return false;
 
-// 3. Encontrar o container da resposta
+          const paragraphs = container.querySelectorAll('p');
+          if (paragraphs.length === 0) return false;
+
+          // Verificar se o último parágrafo tem mais de 10 caracteres
+          const lastP = paragraphs[paragraphs.length - 1];
+          const text = lastP?.textContent?.trim() || '';
+          return text.length > 10;
+        },
+        { timeout: 10000 }
+      );
+      console.log('[Gemini] Texto completo renderizado');
+
+      // 3. Aguardar mais um pouco para garantir
+      await this.page.waitForTimeout(1000);
+
+      // 4. Encontrar o container da resposta
       const container = await this.page.waitForSelector(
         'message-content[id^="message-content-id-"] .markdown.markdown-main-panel',
-        { timeout: 10000 }
+        { timeout: 5000 }
       ).catch(() => null);
 
       if (!container) {
-        // Tentar seletor alternativo
         const altContainer = await this.page.waitForSelector(
           'message-content .markdown',
           { timeout: 5000 }
@@ -423,51 +443,11 @@ export class GeminiWebProvider extends BaseWebProvider {
           throw new Error('Container de resposta não encontrado');
         }
 
-        // Extrair todos os parágrafos do container alternativo
-        const altParagraphs = await altContainer.$$('p');
-        if (altParagraphs.length === 0) {
-          throw new Error('Nenhum parágrafo encontrado no container');
-        }
-        const altTexts: string[] = [];
-        for (const p of altParagraphs) {
-          const text = await p.textContent();
-          if (text && text.trim().length > 0) {
-            altTexts.push(text.trim());
-          }
-        }
-        const altFullResponse = altTexts.join('\n\n');
-        console.log(`[Gemini] Resposta via alt (${altFullResponse.length} caracteres)`);
-        console.log(`[Gemini] Preview: ${altFullResponse.slice(0, 100)}...`);
-        return this.cleanResponseText(altFullResponse);
+        return await this.extractParagraphs(altContainer);
       }
 
-      // 4. Extrair TODOS os parágrafos do container
-      const paragraphs = await container.$$('p');
-
-      if (paragraphs.length === 0) {
-        throw new Error('Nenhum parágrafo encontrado na resposta');
-      }
-
-      // 5. Coletar o texto de todos os parágrafos
-      const texts: string[] = [];
-      for (const p of paragraphs) {
-        const text = await p.textContent();
-        if (text && text.trim().length > 0) {
-          texts.push(text.trim());
-        }
-      }
-
-      // 6. Juntar todos os parágrafos com quebra de linha dupla
-      const fullResponse = texts.join('\n\n');
-
-      if (!fullResponse || fullResponse.length < 10) {
-        throw new Error('Resposta vazia ou muito curta');
-      }
-
-      console.log(`[Gemini] Resposta recebida (${fullResponse.length} caracteres)`);
-      console.log(`[Gemini] Preview: ${fullResponse.slice(0, 100)}...`);
-
-      return this.cleanResponseText(fullResponse);
+      // 5. Extrair TODOS os parágrafos
+      return await this.extractParagraphs(container);
 
     } catch (error) {
       console.error('[Gemini] Erro ao aguardar resposta:', error);
@@ -476,6 +456,33 @@ export class GeminiWebProvider extends BaseWebProvider {
       await this.debugPageStructure();
       throw error;
     }
+  }
+
+  private async extractParagraphs(container: any): Promise<string> {
+    const paragraphs = await container.$$('p');
+
+    if (paragraphs.length === 0) {
+      throw new Error('Nenhum parágrafo encontrado');
+    }
+
+    const texts: string[] = [];
+    for (const p of paragraphs) {
+      const text = await p.textContent();
+      if (text && text.trim().length > 0) {
+        texts.push(text.trim());
+      }
+    }
+
+    const fullResponse = texts.join('\n\n');
+
+    if (!fullResponse || fullResponse.length < 10) {
+      throw new Error('Resposta vazia ou muito curta');
+    }
+
+    console.log(`[Gemini] Resposta recebida (${fullResponse.length} caracteres, ${texts.length} parágrafos)`);
+    console.log(`[Gemini] Preview: ${fullResponse.slice(0, 100)}...`);
+
+    return this.cleanResponseText(fullResponse);
   }
 
   private cleanResponseText(text: string): string {
