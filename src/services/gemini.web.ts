@@ -407,41 +407,67 @@ export class GeminiWebProvider extends BaseWebProvider {
       // 2. Aguardar um pouco para o DOM atualizar
       await this.page.waitForTimeout(2000);
 
-      // 3. USAR waitForSelector para encontrar a mensagem do assistente
-      // Baseado no HTML real: message-content com id dinâmico
-      const responseElement = await this.page.waitForSelector(
-        'message-content[id^="message-content-id-"] .markdown.markdown-main-panel p:first-child',
+// 3. Encontrar o container da resposta
+      const container = await this.page.waitForSelector(
+        'message-content[id^="message-content-id-"] .markdown.markdown-main-panel',
         { timeout: 10000 }
       ).catch(() => null);
 
-      if (!responseElement) {
+      if (!container) {
         // Tentar seletor alternativo
-        const altElement = await this.page.waitForSelector(
-          'message-content .markdown p:first-child',
+        const altContainer = await this.page.waitForSelector(
+          'message-content .markdown',
           { timeout: 5000 }
         ).catch(() => null);
-        if (altElement) {
-          const text = await altElement.textContent();
-          if (text && text.length > 10) {
-            console.log(`[Gemini] Resposta via alt: ${text.slice(0, 50)}...`);
-            return this.cleanResponseText(text);
+        if (!altContainer) {
+          throw new Error('Container de resposta não encontrado');
+        }
+
+        // Extrair todos os parágrafos do container alternativo
+        const altParagraphs = await altContainer.$$('p');
+        if (altParagraphs.length === 0) {
+          throw new Error('Nenhum parágrafo encontrado no container');
+        }
+        const altTexts: string[] = [];
+        for (const p of altParagraphs) {
+          const text = await p.textContent();
+          if (text && text.trim().length > 0) {
+            altTexts.push(text.trim());
           }
         }
-        throw new Error('Elemento de resposta não encontrado');
+        const altFullResponse = altTexts.join('\n\n');
+        console.log(`[Gemini] Resposta via alt (${altFullResponse.length} caracteres)`);
+        console.log(`[Gemini] Preview: ${altFullResponse.slice(0, 100)}...`);
+        return this.cleanResponseText(altFullResponse);
       }
 
-      // 4. Extrair o texto do elemento
-      const responseText = await responseElement.textContent();
+      // 4. Extrair TODOS os parágrafos do container
+      const paragraphs = await container.$$('p');
 
-      if (!responseText || responseText.length < 10) {
+      if (paragraphs.length === 0) {
+        throw new Error('Nenhum parágrafo encontrado na resposta');
+      }
+
+      // 5. Coletar o texto de todos os parágrafos
+      const texts: string[] = [];
+      for (const p of paragraphs) {
+        const text = await p.textContent();
+        if (text && text.trim().length > 0) {
+          texts.push(text.trim());
+        }
+      }
+
+      // 6. Juntar todos os parágrafos com quebra de linha dupla
+      const fullResponse = texts.join('\n\n');
+
+      if (!fullResponse || fullResponse.length < 10) {
         throw new Error('Resposta vazia ou muito curta');
       }
 
-      console.log(`[Gemini] Resposta recebida (${responseText.length} caracteres)`);
-      console.log(`[Gemini] Preview: ${responseText.slice(0, 100)}...`);
+      console.log(`[Gemini] Resposta recebida (${fullResponse.length} caracteres)`);
+      console.log(`[Gemini] Preview: ${fullResponse.slice(0, 100)}...`);
 
-      // 5. Limpar textos da UI
-      return this.cleanResponseText(responseText);
+      return this.cleanResponseText(fullResponse);
 
     } catch (error) {
       console.error('[Gemini] Erro ao aguardar resposta:', error);
@@ -461,6 +487,10 @@ export class GeminiWebProvider extends BaseWebProvider {
       .replace(/Submit.*/g, '')
       .replace(/Fullscreen.*/g, '')
       .replace(/User:.*/g, '')
+      .replace(/ConversaSparkBeta/g, '')
+      .replace(/Novo notebook/g, '')
+      .replace(/Untitled notebook/g, '')
+      .replace(/Recentes/g, '')
       .trim();
   }
 
