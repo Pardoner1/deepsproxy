@@ -23,11 +23,6 @@ const PROMPT_TEXTAREA =
   'textarea[aria-label*="Pergunte"], textarea[aria-label*="Prompt"], ' +
   'rich-textarea[aria-label*="Prompt"], textarea, [role="textbox"]';
 
-// Selectors for the "Stop generating" button (visible while streaming).
-const STOP_BUTTON =
-  'button[aria-label*="Stop"], button[data-testid="stop-button"], ' +
-  'button[aria-label*="Parar"], button[aria-label*="Stop generating"]';
-
 export class GeminiWebProvider extends BaseWebProvider {
   private readonly GEMINI_URL = GEMINI_URL;
   private manualLoginMode = false;
@@ -392,191 +387,81 @@ export class GeminiWebProvider extends BaseWebProvider {
     await this.page.waitForSelector(PROMPT_TEXTAREA, { timeout });
   }
 
-  private async waitForGeminiResponse(timeout: number = 120000): Promise<string> {
+  private async waitForGeminiResponse(timeout: number = 60000): Promise<string> {
     if (!this.page) throw new Error('Browser not initialized');
 
-    // Wait for the "Stop" button to disappear (generation finished).
-    try {
-      await this.page.waitForSelector(STOP_BUTTON, { state: 'hidden', timeout: 30000 });
-    } catch {
-      // Stop button never appeared; fall back to a fixed wait.
-      await this.page.waitForTimeout(5000);
-    }
-
-    // Small settle delay so the final message is fully rendered.
-    await this.page.waitForTimeout(2000);
-
-    console.log('[Gemini] Extraindo resposta...');
-
-    const response = await this.extractAssistantResponse();
-
-    if (!response || response.length < 10) {
-      console.warn('[Gemini] Resposta curta ou vazia, tentando debug...');
-      await this.debugPageStructure();
-      throw new Error('Resposta vazia ou inválida do Gemini');
-    }
-
-    console.log(`[Gemini] Resposta recebida (${response.length} caracteres)`);
-    return response;
-  }
-
-  /**
-   * Extracts only the assistant's response text, filtering out UI chrome.
-   * Tries a list of targeted selectors first, then falls back to scanning for
-   * the most substantial text block that does not look like interface chrome.
-   *
-   * IMPORTANT: the extraction code is passed to page.evaluate() as a STRING of
-   * plain browser JavaScript. Passing a compiled function lets tsx/esbuild
-   * inject the `__name` helper, which does not exist in the browser context and
-   * throws "ReferenceError: __name is not defined". A string is executed
-   * verbatim and avoids that transform entirely.
-   */
-  private async extractAssistantResponse(): Promise<string> {
-    if (!this.page) return '';
-
-    console.log('[Gemini] Extraindo resposta...');
-
-    // Código JavaScript PURO para executar no navegador.
-    // NADA de TypeScript, NADA de funções nomeadas decoradas por tsx.
-    // O Gemini renderiza as respostas em elementos `message-content` com id
-    // dinâmico (message-content-id-*) e o conteúdo markdown em
-    // `.markdown.markdown-main-panel p`.
-    const extractScript = `
-      (function() {
-        // Função de limpeza
-        function cleanText(text) {
-          if (!text) return '';
-          var uiPatterns = [
-            'Dictate', 'Sign in', 'Settings', 'Switch model',
-            'Submit', 'Fullscreen', 'New chat', 'Send', 'Stop',
-            'Regenerate', 'Copy', 'Like', 'Dislike', 'Share',
-            'Report', 'Edit', 'Delete', 'Pesquisar conversas',
-            'Imagens', 'Vídeos', 'Biblioteca', 'Notebooks',
-            'Recentes', 'Pro', 'Nova conversa', 'User:', 'Spark',
-            'Beta', 'Conversa', 'Untitled notebook', 'Flash'
-          ];
-          var cleaned = text;
-          for (var i = 0; i < uiPatterns.length; i++) {
-            cleaned = cleaned.replace(new RegExp(uiPatterns[i], 'gi'), '');
-          }
-          return cleaned.replace(/\\s+/g, ' ').trim();
-        }
-
-        function isUiText(text) {
-          var uiKeywords = [
-            'Dictate', 'Sign in', 'Settings', 'Switch model',
-            'Submit', 'Fullscreen', 'New chat', 'User:', 'Spark',
-            'Beta', 'Conversa', 'Untitled notebook', 'Flash'
-          ];
-          for (var i = 0; i < uiKeywords.length; i++) {
-            if (text.indexOf(uiKeywords[i]) !== -1) return true;
-          }
-          return false;
-        }
-
-        // MÉTODO 1: message-content (MAIS CONFIÁVEL) - a resposta do Gemini
-        var messageContent = document.querySelector('message-content');
-        if (messageContent) {
-          var markdown = messageContent.querySelector('.markdown.markdown-main-panel');
-          if (markdown) {
-            var paragraphs = markdown.querySelectorAll('p');
-            var texts = [];
-            for (var i = 0; i < paragraphs.length; i++) {
-              var text = cleanText(paragraphs[i].textContent || '');
-              if (text.length > 5 && !isUiText(text) && text.indexOf('User:') === -1) {
-                texts.push(text);
-              }
-            }
-            if (texts.length > 0) {
-              return texts.join(' ');
-            }
-          }
-        }
-
-        // MÉTODO 2: Por id da mensagem (padrão: message-content-id-*)
-        var messageElements = document.querySelectorAll('[id^="message-content-id-"]');
-        if (messageElements.length > 0) {
-          var idLast = messageElements[messageElements.length - 1];
-          var idMarkdown = idLast.querySelector('.markdown.markdown-main-panel');
-          if (idMarkdown) {
-            var idParagraphs = idMarkdown.querySelectorAll('p');
-            var idTexts = [];
-            for (var i = 0; i < idParagraphs.length; i++) {
-              var text = cleanText(idParagraphs[i].textContent || '');
-              if (text.length > 5 && !isUiText(text) && text.indexOf('User:') === -1) {
-                idTexts.push(text);
-              }
-            }
-            if (idTexts.length > 0) {
-              return idTexts.join(' ');
-            }
-          }
-        }
-
-        // MÉTODO 3: p[data-path-to-node]
-        var pathParagraphs = document.querySelectorAll('p[data-path-to-node]');
-        if (pathParagraphs.length > 0) {
-          var pathTexts = [];
-          for (var i = pathParagraphs.length - 1; i >= 0; i--) {
-            var text = cleanText(pathParagraphs[i].textContent || '');
-            if (text.length > 10 && !isUiText(text) && text.indexOf('User:') === -1) {
-              pathTexts.push(text);
-            }
-          }
-          if (pathTexts.length > 0) {
-            return pathTexts.join(' ');
-          }
-        }
-
-        // MÉTODO 4: FALLBACK - qualquer texto substancial que não seja UI
-        var allElements = document.querySelectorAll('div, p, span');
-        var candidates = [];
-        for (var i = 0; i < allElements.length; i++) {
-          var text = cleanText(allElements[i].textContent || '');
-          if (text.length > 30 && !isUiText(text) && text.indexOf('User:') === -1) {
-            var className = typeof allElements[i].className === 'string' ? allElements[i].className : '';
-            var role = allElements[i].getAttribute('role') || '';
-            if (className.indexOf('button') === -1 &&
-                className.indexOf('menu') === -1 &&
-                className.indexOf('header') === -1 &&
-                className.indexOf('toolbar') === -1 &&
-                role !== 'button' &&
-                role !== 'menu') {
-              candidates.push({ text: text, length: text.length });
-            }
-          }
-        }
-
-        if (candidates.length > 0) {
-          candidates.sort(function(a, b) { return b.length - a.length; });
-          for (var i = 0; i < candidates.length; i++) {
-            if (!isUiText(candidates[i].text) && candidates[i].text.indexOf('User:') === -1) {
-              return candidates[i].text;
-            }
-          }
-        }
-
-        return '';
-      })();
-    `;
+    console.log('[Gemini] Aguardando resposta...');
 
     try {
-      const response = await this.page.evaluate(extractScript) as string;
-
-      if (!response || response.length < 10) {
-        console.warn('[Gemini] Resposta curta ou vazia');
-        await this.debugPageStructure();
-        return '';
+      // 1. Aguardar o botão "Stop" desaparecer (indica que terminou de gerar)
+      try {
+        await this.page.waitForSelector(
+          'button[aria-label*="Stop"], button[data-testid="stop-button"]',
+          { state: 'hidden', timeout: 30000 }
+        );
+        console.log('[Gemini] Botão Stop desapareceu');
+      } catch {
+        console.log('[Gemini] Botão Stop não encontrado, continuando...');
       }
 
-      console.log(`[Gemini] Resposta recebida (${response.length} caracteres)`);
-      console.log(`[Gemini] Preview: ${response.slice(0, 100)}...`);
-      return response;
+      // 2. Aguardar um pouco para o DOM atualizar
+      await this.page.waitForTimeout(2000);
+
+      // 3. USAR waitForSelector para encontrar a mensagem do assistente
+      // Baseado no HTML real: message-content com id dinâmico
+      const responseElement = await this.page.waitForSelector(
+        'message-content[id^="message-content-id-"] .markdown.markdown-main-panel p:first-child',
+        { timeout: 10000 }
+      ).catch(() => null);
+
+      if (!responseElement) {
+        // Tentar seletor alternativo
+        const altElement = await this.page.waitForSelector(
+          'message-content .markdown p:first-child',
+          { timeout: 5000 }
+        ).catch(() => null);
+        if (altElement) {
+          const text = await altElement.textContent();
+          if (text && text.length > 10) {
+            console.log(`[Gemini] Resposta via alt: ${text.slice(0, 50)}...`);
+            return this.cleanResponseText(text);
+          }
+        }
+        throw new Error('Elemento de resposta não encontrado');
+      }
+
+      // 4. Extrair o texto do elemento
+      const responseText = await responseElement.textContent();
+
+      if (!responseText || responseText.length < 10) {
+        throw new Error('Resposta vazia ou muito curta');
+      }
+
+      console.log(`[Gemini] Resposta recebida (${responseText.length} caracteres)`);
+      console.log(`[Gemini] Preview: ${responseText.slice(0, 100)}...`);
+
+      // 5. Limpar textos da UI
+      return this.cleanResponseText(responseText);
+
     } catch (error) {
-      console.error('[Gemini] Erro ao extrair resposta:', error);
+      console.error('[Gemini] Erro ao aguardar resposta:', error);
+
+      // Debug: salvar estrutura da página
       await this.debugPageStructure();
       throw error;
     }
+  }
+
+  private cleanResponseText(text: string): string {
+    return text
+      .replace(/Dictate.*/g, '')
+      .replace(/Sign in.*/g, '')
+      .replace(/Settings.*/g, '')
+      .replace(/Switch model.*/g, '')
+      .replace(/Submit.*/g, '')
+      .replace(/Fullscreen.*/g, '')
+      .replace(/User:.*/g, '')
+      .trim();
   }
 
   /** Logs a sample of page text to help tune selectors when the UI changes. */
