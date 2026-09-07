@@ -13,8 +13,10 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { chatCompletions } from './routes/chat.ts';
 import * as dotenv from 'dotenv';
-import { initPlaywright } from './services/playwright.ts';
+import { initPlaywright, closePlaywright } from './services/playwright.ts';
 import { getContextLength } from './services/telemetry.ts';
+import { getConfig } from './utils/config.ts';
+import { GeminiWebProvider } from './services/gemini.web.ts';
 
 dotenv.config();
 
@@ -65,18 +67,28 @@ app.get('/v1/models', (c) => {
       modelEntry('deepseek-v4-flash'),
       modelEntry('deepseek-v4-flash-thinking'),
       modelEntry('deepseek-v4-pro'),
-      modelEntry('deepseek-v4-pro-thinking')
+      modelEntry('deepseek-v4-pro-thinking'),
+      modelEntry('gemini-pro'),
+      modelEntry('gemini-1.5-pro'),
+      modelEntry('gemini-1.5-flash'),
+      modelEntry('gemini-2.0-flash')
     ]
   });
 });
 
-// Initialize playwright when server starts
+// Initialize the active provider's browser when the server starts
 import { fileURLToPath } from 'url';
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  initPlaywright().then(() => {
-    console.log('Playwright initialized.');
-    const port = process.env.PORT ? parseInt(process.env.PORT) : 3000;
+  const { PROVIDER } = getConfig();
+
+  const boot = PROVIDER === 'deepseek'
+    ? initPlaywright()
+    : new GeminiWebProvider().initialize();
+
+  boot.then(() => {
+    console.log(`${PROVIDER.toUpperCase()} provider initialized.`);
+    const port = getConfig().PORT;
     console.log(`Server is running on port ${port}`);
 
     serve({
@@ -84,7 +96,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       port
     });
   }).catch((err: any) => {
-    console.error('Failed to initialize playwright:', err);
+    console.error(`Failed to initialize ${PROVIDER} provider:`, err);
     process.exit(1);
+  });
+
+  process.on('SIGINT', async () => {
+    await closePlaywright().catch(() => {});
+    process.exit(0);
   });
 }

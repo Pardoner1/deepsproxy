@@ -85,11 +85,18 @@ docker-compose up -d
 Crie o arquivo `.env` na raiz do projeto:
 
 ```env
+# Provider: gemini ou deepseek (default: gemini)
+PROVIDER=gemini
+
 # Porta do servidor (default: 3000)
 PORT=3000
 
 # Chave de API para proteger endpoints (opcional)
 API_KEY=sua-chave-secreta-aqui
+
+# Credenciais Gemini (para login automatizado via scraping)
+GEMINI_EMAIL=seu-email@gmail.com
+GEMINI_PASSWORD=sua-senha
 
 # Configurações Playwright
 PLAYWRIGHT_HEADLESS=true
@@ -103,12 +110,72 @@ LOG_LEVEL=info
 
 | Variável | Descrição | Default | Obrigatória |
 |----------|-----------|---------|------------|
+| `PROVIDER` | Provider ativo: `gemini` ou `deepseek` | `gemini` | Não |
 | `PORT` | Porta HTTP do servidor | `3000` | Não |
 | `API_KEY` | Chave para autenticação de requests | - | Não |
+| `GEMINI_EMAIL` | Email Google para login automatizado no Gemini | - | Não* |
+| `GEMINI_PASSWORD` | Senha Google para login automatizado no Gemini | - | Não* |
 | `PLAYWRIGHT_HEADLESS` | Executar browser em modo headless | `true` | Não |
 | `PLAYWRIGHT_TIMEOUT` | Timeout para operações do Playwright (ms) | `30000` | Não |
 
-\* Necessária para funcionalidades que requerem acesso à API DeepSeek
+\* Necessária apenas para login automatizado; caso contrário o login pode ser feito manualmente no browser aberto pelo comando `npm run login:gemini`.
+
+---
+
+## 🚀 Providers (Gemini e DeepSeek)
+
+O proxy suporta dois providers de web scraping, alternados pela variável `PROVIDER` (default: `gemini`). Ambos usam Playwright e persistem a sessão em um perfil local (`gemini_profile/` ou `deepseek_profile/`), evitando login a cada requisição.
+
+### Login Gemini
+
+```bash
+# Usando credenciais do .env (GEMINI_EMAIL / GEMINI_PASSWORD)
+npm run login:gemini
+
+# Ou manualmente: o browser abre e você completa o login
+```
+
+### Login DeepSeek
+
+```bash
+npm run login:deepseek
+```
+
+### Como funciona o scraping do Gemini:
+
+1. O Playwright abre um navegador headless
+2. Acessa https://gemini.google.com
+3. Usa a sessão salva (`gemini_profile/`) ou faz login automático
+4. Limpa o chat anterior e envia o prompt
+5. Aguarda a resposta completa (botão "Stop" desaparecer)
+6. Extrai APENAS o conteúdo da mensagem do assistente
+7. Retorna no formato compatível com OpenAI API
+
+### Seletores utilizados para extração:
+
+O sistema usa múltiplos seletores para garantir a captura correta da resposta:
+- `[data-message-type="assistant"]`
+- `[data-testid="assistant-message"]`
+- `.message-content.assistant`
+- `.model-response-text`
+- E fallbacks para garantir robustez
+
+### Limpeza de texto:
+
+Textos da UI são automaticamente filtrados:
+- "Dictate", "Sign in", "Settings"
+- "Switch model", "Submit", "Fullscreen"
+- Teclas de atalho como "^⇧D"
+- Botões de ação (Copy, Like, Dislike, etc.)
+
+Se a resposta vier vazia ou inválida, o sistema loga a estrutura da página (`debugPageStructure`) para facilitar o ajuste de seletores.
+
+### Iniciar o servidor
+
+```bash
+# Usa o provider definido no .env
+npm start
+```
 
 ---
 
@@ -181,10 +248,30 @@ GET /v1/models
       "object": "model",
       "created": 1715616000,
       "owned_by": "deepseek"
+    },
+    {
+      "id": "gemini-pro",
+      "object": "model",
+      "created": 1715616000,
+      "owned_by": "gemini"
+    },
+    {
+      "id": "gemini-1.5-flash",
+      "object": "model",
+      "created": 1715616000,
+      "owned_by": "gemini"
+    },
+    {
+      "id": "gemini-2.0-flash",
+      "object": "model",
+      "created": 1715616000,
+      "owned_by": "gemini"
     }
   ]
 }
 ```
+
+> Modelos `gemini-*` são roteados para o scraper web do Gemini; modelos `deepseek-*` para o fluxo original do DeepSeek. O roteamento é feito pelo prefixo do modelo, independente do `PROVIDER` definido no `.env`.
 
 ---
 

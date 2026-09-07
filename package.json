@@ -6,8 +6,11 @@
   "scripts": {
     "start": "npx tsx src/index.ts",
     "login": "npx tsx src/login.ts",
+    "login:gemini": "PROVIDER=gemini npx tsx src/login.ts",
+    "login:deepseek": "PROVIDER=deepseek npx tsx src/login.ts",
     "test": "tsx --test src/**/*.test.ts",
-    "build": "tsc"
+    "build": "tsc",
+    "dev": "npx tsx watch src/index.ts"
   },
   "keywords": [],
   "author": "Pedro Farias",

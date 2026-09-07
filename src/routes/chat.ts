@@ -12,6 +12,7 @@ import { Context } from 'hono';
 import { stream as honoStream } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
 import { createDeepSeekStream, updateSessionParent } from '../services/deepseek.ts';
+import { GeminiWebProvider } from '../services/gemini.web.ts';
 import { OpenAIRequest, ChoiceDelta, Message, ToolCall, Usage } from '../utils/types.ts';
 import { robustParseJSON } from '../utils/json.ts';
 import { getModelTelemetry, recordSuccess, recordFailure } from '../services/telemetry.ts';
@@ -526,11 +527,86 @@ async function peekStream(stream: ReadableStream): Promise<{ isEmpty: boolean; p
   }
 }
 
+let geminiProvider: GeminiWebProvider | null = null;
+
+function getGeminiProvider(): GeminiWebProvider {
+  if (!geminiProvider) geminiProvider = new GeminiWebProvider();
+  return geminiProvider;
+}
+
+// Test seam: allows injecting a fake provider without launching a browser.
+export function _setGeminiProvider(provider: GeminiWebProvider | null): void {
+  geminiProvider = provider;
+}
+
+async function handleGeminiRequest(c: Context, body: OpenAIRequest): Promise<Response> {
+  const isStream = body.stream ?? false;
+  const messages = body.messages || [];
+  const completionId = 'chatcmpl-' + uuidv4();
+
+  const telemetry = getModelTelemetry(body.model);
+  const compressed = compressMessages(messages, telemetry.detectedLimit, serializeOpenAIMessages);
+  const serialized = serializeOpenAIMessages(compressed);
+  const systemPrompt = appendToolInstructions(serialized.systemPrompt, body);
+  const finalPrompt = systemPrompt ? `${systemPrompt}\n${serialized.prompt}` : serialized.prompt;
+  const promptTokens = Math.ceil(finalPrompt.length / 3.5);
+
+  try {
+    const provider = getGeminiProvider();
+    await provider.initialize();
+    const content = await provider.sendMessage(finalPrompt);
+
+    const usage: Usage = {
+      prompt_tokens: promptTokens,
+      completion_tokens: Math.ceil(content.length / 3.5),
+      total_tokens: promptTokens + Math.ceil(content.length / 3.5),
+      prompt_tokens_details: { cached_tokens: 0 }
+    };
+    recordSuccess(body.model, finalPrompt.length);
+
+    if (!isStream) {
+      return c.json({
+        id: completionId,
+        object: 'chat.completion',
+        created: Math.floor(Date.now() / 1000),
+        model: body.model,
+        choices: [{ index: 0, message: { role: 'assistant', content }, logprobs: null, finish_reason: 'stop' }],
+        usage
+      });
+    }
+
+    c.header('Content-Type', 'text/event-stream');
+    c.header('Cache-Control', 'no-cache');
+    c.header('Connection', 'keep-alive');
+
+    return honoStream(c, async (streamWriter: any) => {
+      const writeEvent = (data: any) =>
+        streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
+
+      await writeEvent(makeChunk(completionId, body.model, { role: 'assistant', content: '' }));
+      await writeEvent(makeChunk(completionId, body.model, { content }));
+      await writeEvent(makeChunk(completionId, body.model, {}, 'stop', usage));
+      await streamWriter.write('data: [DONE]\n\n');
+    });
+  } catch (err: any) {
+    console.error('Error in Gemini handler:', err);
+    return c.json(
+      { error: { message: err?.message || String(err), type: 'gemini_error', code: 'gemini_error' } },
+      500 as any
+    );
+  }
+}
+
 export async function chatCompletions(c: Context) {
   try {
     const body: OpenAIRequest = await c.req.json();
     const isStream = body.stream ?? false;
     const messages = body.messages || [];
+
+    // Route Gemini model requests to the Gemini web-scraping provider.
+    if (body.model.startsWith('gemini')) {
+      return handleGeminiRequest(c, body);
+    }
 
     const isThinkingModel = body.model.includes('thinking');
     const isProModel = body.model.includes('pro');

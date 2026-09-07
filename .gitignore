@@ -1,6 +1,7 @@
 node_modules/
 dist/
 deepseek_profile/
+gemini_profile/
 .env
 .env.local
 *.log
