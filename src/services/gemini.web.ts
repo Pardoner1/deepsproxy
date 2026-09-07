@@ -440,71 +440,113 @@ export class GeminiWebProvider extends BaseWebProvider {
     // NADA de TypeScript, NADA de funções nomeadas decoradas por tsx.
     const extractScript = `
       (function() {
-        // Função de limpeza de texto
+        // Função de limpeza
         function cleanText(text) {
           if (!text) return '';
-
+          // Remover textos da UI
           var uiPatterns = [
             'Dictate', 'Sign in', 'Settings', 'Switch model',
             'Submit', 'Fullscreen', 'New chat', 'Send', 'Stop',
             'Regenerate', 'Copy', 'Like', 'Dislike', 'Share',
-            'Report', 'Edit', 'Delete', '^⇧D', '^⇧M'
+            'Report', 'Edit', 'Delete', 'Conversa', 'Spark',
+            'Beta', 'Pesquisar conversas', 'Imagens', 'Vídeos',
+            'Biblioteca', 'Notebooks', 'Recentes', 'Pro',
+            'Nova conversa', 'Novo notebook', 'Untitled notebook'
           ];
-
           var cleaned = text;
           for (var i = 0; i < uiPatterns.length; i++) {
             cleaned = cleaned.replace(new RegExp(uiPatterns[i], 'gi'), '');
           }
-
           return cleaned.replace(/\\s+/g, ' ').trim();
         }
 
-        // Verificar se texto parece UI
-        function isUiChrome(text) {
-          var uiKeywords = ['Dictate', 'Sign in', 'Settings', 'Switch model', 'Submit', 'Fullscreen'];
+        // Verificar se o texto é da UI
+        function isUiText(text) {
+          var uiKeywords = [
+            'Dictate', 'Sign in', 'Settings', 'Switch model',
+            'Submit', 'Fullscreen', 'New chat', 'Conversa',
+            'Spark', 'Beta', 'Pesquisar conversas', 'Imagens',
+            'Vídeos', 'Biblioteca', 'Notebooks', 'Recentes',
+            'Pro', 'Nova conversa', 'Novo notebook'
+          ];
           for (var i = 0; i < uiKeywords.length; i++) {
             if (text.indexOf(uiKeywords[i]) !== -1) return true;
           }
           return false;
         }
 
-        // SELETORES PARA MENSAGENS DO ASSISTENTE
-        var assistantSelectors = [
-          '[data-message-type="assistant"]',
-          '[data-testid="assistant-message"]',
+        // MÉTODO 1: Procurar mensagens do assistente com data-message-type
+        var assistantMessages = document.querySelectorAll('[data-message-type="assistant"]');
+        if (assistantMessages.length > 0) {
+          // Pegar a ÚLTIMA mensagem do assistente
+          var lastMessage = assistantMessages[assistantMessages.length - 1];
+          var text = cleanText(lastMessage.textContent || '');
+          if (text.length > 10 && !isUiText(text)) {
+            return text;
+          }
+        }
+
+        // MÉTODO 2: Procurar por mensagens com classe específica
+        var messageSelectors = [
           '.message-content.assistant',
-          '.model-response-text:last-child',
-          '.conversation-item:last-child [data-message-type="assistant"]',
-          'div[role="article"]:last-child .text-content',
-          '.text-body-large:last-child'
+          '.model-response-text',
+          '[data-testid="assistant-message"]',
+          '.conversation-item:last-child [data-message-type="assistant"]'
         ];
 
-        // Tentar cada seletor
-        for (var s = 0; s < assistantSelectors.length; s++) {
-          var elements = document.querySelectorAll(assistantSelectors[s]);
+        for (var s = 0; s < messageSelectors.length; s++) {
+          var elements = document.querySelectorAll(messageSelectors[s]);
           if (elements.length > 0) {
             var lastEl = elements[elements.length - 1];
             var text = cleanText(lastEl.textContent || '');
-            if (text.length > 10 && !isUiChrome(text)) {
+            if (text.length > 10 && !isUiText(text)) {
               return text;
             }
           }
         }
 
-        // FALLBACK: Procurar qualquer texto substancial
-        var allElements = document.querySelectorAll('div, p, span, pre, code, article');
-        var bestText = '';
-        var bestLength = 0;
+        // MÉTODO 3: Procurar por qualquer elemento com texto substancial
+        // que NÃO seja da UI
+        var allElements = document.querySelectorAll('div, p, span, pre, code');
+        var candidates = [];
 
-        for (var e = 0; e < allElements.length; e++) {
-          var text = cleanText(allElements[e].textContent || '');
-          if (text.length > bestLength && text.length > 20 && !isUiChrome(text)) {
-            bestText = text;
-            bestLength = text.length;
+        for (var i = 0; i < allElements.length; i++) {
+          var el = allElements[i];
+          var text = cleanText(el.textContent || '');
+          // Verificar se o elemento é uma mensagem (não UI)
+          if (text.length > 20 && !isUiText(text)) {
+            // Verificar se o elemento não é um botón, menu o header
+            var className = typeof el.className === 'string' ? el.className : '';
+            var role = el.getAttribute('role') || '';
+            if (className.indexOf('button') === -1 &&
+                className.indexOf('menu') === -1 &&
+                className.indexOf('header') === -1 &&
+                className.indexOf('toolbar') === -1 &&
+                role !== 'button' &&
+                role !== 'menu') {
+              candidates.push({
+                text: text,
+                length: text.length,
+                depth: el.parentElement ? el.parentElement.children.length : 0
+              });
+            }
           }
         }
 
-        return bestText;
+        // Pegar o candidato com maior texto (que não é UI)
+        if (candidates.length > 0) {
+          candidates.sort(function(a, b) { return b.length - a.length; });
+          // Verificar se o maior não é UI
+          if (!isUiText(candidates[0].text)) {
+            return candidates[0].text;
+          }
+          // Tentar o segundo
+          if (candidates.length > 1 && !isUiText(candidates[1].text)) {
+            return candidates[1].text;
+          }
+        }
+
+        return '';
       })();
     `;
 
@@ -512,12 +554,13 @@ export class GeminiWebProvider extends BaseWebProvider {
       const response = await this.page.evaluate(extractScript) as string;
 
       if (!response || response.length < 10) {
-        console.warn('[Gemini] Resposta curta ou vazia, tentando debug...');
+        console.warn('[Gemini] Resposta curta ou vazia');
         await this.debugPageStructure();
         return '';
       }
 
       console.log(`[Gemini] Resposta recebida (${response.length} caracteres)`);
+      console.log(`[Gemini] Preview: ${response.slice(0, 200)}...`);
       return response;
     } catch (error) {
       console.error('[Gemini] Erro ao extrair resposta:', error);
